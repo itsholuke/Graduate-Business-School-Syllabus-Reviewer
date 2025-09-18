@@ -3,75 +3,130 @@ import pandas as pd
 import os
 import re
 import zipfile
-from io import BytesIO, StringIO
+from io import BytesIO
 from tempfile import NamedTemporaryFile
-
-# =====================
-# 1. Helper functions
-# =====================
-
-# PDF/DOCX/TXT extractors
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 
-DAY_NAMES = r"(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)"
-TIME_RE = r"(?:\b\d{1,2}:\d{2}\s?(?:AM|PM|am|pm)\b|\b\d{1,2}\s?(?:AM|PM|am|pm)\b)"
-EMAIL_CPP_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@(?:cpp|csupomona)\.edu\b", re.I)
-INPERSON_TOKENS = [
-    r"\bF2F\b", r"face[- ]?to[- ]?face", r"\bin[- ]?person\b", r"on[- ]?campus", r"classroom", r"room\s*[A-Za-z0-9-]+",
-]
-SCHEDULE_SECTION_HINTS = re.compile(
-    r"(weekly\s*schedule|course\s*schedule|tentative\s*schedule|schedule\s*of\s*topics|class\s*schedule|calendar)",
-    re.I,
-)
-MODALITY_HINTS = re.compile(
-    r"(modality|instruction\s*mode|mode\s*of\s*instruction|delivery|format|meeting\s*modality|class\s*modality)",
-    re.I,
-)
+st.set_page_config(page_title="Graduate Business School Syllabus Reviewer", layout="centered")
+st.title("Graduate Business School Syllabus Reviewer")
+st.markdown("""
+Upload your **Excel/ODS template** and then one or more **syllabus files** (.pdf, .docx, .txt, .zip).  
+The app will extract the required data and provide a single Excel file with one row per syllabus.
+""")
 
-class TextBlob:
-    def __init__(self, text: str, source_path: str):
-        self.text = text or ""
-        self.source = source_path
-        self.lines = [ln.strip() for ln in self.text.splitlines() if ln.strip()]
+# ========== Field Extraction Logic (Updated for Your Files) ==========
 
-    def contains(self, pattern: str) -> bool:
-        return re.search(pattern, self.text, re.I) is not None
+def extract_course_name_number(lines):
+    for i, ln in enumerate(lines[:40]):
+        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)[\s:.\-]+(.+)", ln)
+        if m:
+            return f"{m.group(1).strip()}: {m.group(2).strip()}"
+        if ln.strip().startswith("GBA ") and len(ln.strip()) < 40:
+            if i+1 < len(lines):
+                return f"{ln.strip()}: {lines[i+1].strip()}"
+    for i, ln in enumerate(lines[:20]):
+        if ln.strip().isupper() and "GBA" in ln and len(ln.strip()) > 10:
+            return ln.strip()
+    return ""
 
-    def find_lines(self, pattern: str, window: int = 0):
-        out = []
-        rx = re.compile(pattern, re.I)
-        for i, ln in enumerate(self.lines):
-            if rx.search(ln):
-                start = max(0, i - window)
-                end = min(len(self.lines), i + window + 1)
-                out.append(" \n".join(self.lines[start:end]))
-        return out
+def extract_faculty_name(lines):
+    for ln in lines[:60]:
+        if 'Instructor:' in ln or 'Professor:' in ln or 'Faculty:' in ln:
+            name = ln.split(':',1)[-1].strip()
+            name = re.sub(r",?\s*(Ph\.?D\.?|MBA|CPA|CGMA|Esq\.?|Ed\.?D\.?|MSc|MSBA|MS)", "", name)
+            return name.split('(')[0].strip()
+        if ln.strip().startswith("Dr. "):
+            return ln.strip().split(",")[0].replace("Dr. ", "").strip()
+    return ""
 
-def clean_text(s: str) -> str:
-    if not s:
-        return ""
-    s = re.sub(r"\u00A0", " ", s)
-    s = re.sub(r"\s+", " ", s)
-    return s.strip()
+def extract_email(lines):
+    for ln in lines[:40]:
+        m = re.search(r"([a-zA-Z0-9._%+-]+@cpp\.edu)", ln)
+        if m:
+            return "Yes"
+    return "No"
 
-def extract_text_pdf(path: str) -> str:
+def extract_schedule(lines):
+    for ln in lines[:80]:
+        if "Class schedule" in ln.lower() or "Meeting Time" in ln or "Class Schedule" in ln or "Meeting Days" in ln:
+            return "Yes"
+        if re.search(r"\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\.?\s+\d{1,2}:", ln):
+            return "Yes"
+    return "No"
+
+def extract_class_location(lines):
+    for ln in lines[:80]:
+        if "Location:" in ln or "Room" in ln or "Building" in ln:
+            return "Yes"
+    return "No"
+
+def extract_office_hours(lines):
+    for ln in lines[:80]:
+        if "Office Hours" in ln or "office hours" in ln:
+            return "Yes"
+    return "No"
+
+def extract_office_location(lines):
+    for ln in lines[:80]:
+        if ("Office Location:" in ln or "Office:" in ln) and "Office Hours" not in ln:
+            return "Yes"
+    return "No"
+
+def extract_learning_outcomes(lines):
+    for ln in lines[:120]:
+        if "Learning Objectives" in ln or "Learning Outcomes" in ln or "Objectives" in ln:
+            return "Yes"
+    return "No"
+
+def extract_modality(lines):
+    for ln in lines[:80]:
+        if re.search(r"hybrid|asynchronous|synchronous|in-person|face[- ]?to[- ]?face|online", ln, re.I):
+            return ln.strip()
+        if "Format" in ln or "Instruction Mode" in ln or "Mode" in ln:
+            return ln.strip()
+    return ""
+
+def extract_grade_components(lines):
+    for ln in lines:
+        if "Grading" in ln or "Grade" in ln or "weight" in ln:
+            if "%" in ln or "points" in ln.lower():
+                return "Yes"
+    return "No"
+
+def extract_weekly_schedule(lines):
+    block = "\n".join(lines)
+    if re.search(r"Week\s*\d+|Module\s*\d+|Session\s*\d+|Date\s+", block, re.I):
+        return "Yes"
+    return "No"
+
+def extract_50pct_in_person(lines):
+    inperson_count = 0
+    total_count = 0
+    for ln in lines:
+        if re.search(r"\b(Week|Module|Session)\b", ln) or re.search(r"\bIn[- ]?Person\b|\bF2F\b", ln, re.I):
+            total_count += 1
+            if re.search(r"In[- ]?Person|F2F|Face[- ]?to[- ]?Face", ln, re.I):
+                inperson_count += 1
+    if total_count >= 8 and inperson_count / total_count >= 0.5:
+        return "Yes"
+    return "No"
+
+# ========== File Extraction Helpers ==========
+
+def extract_text_pdf(path):
     text_parts = []
     try:
         reader = PdfReader(path)
         for page in reader.pages:
-            try:
-                t = page.extract_text() or ""
-                if t:
-                    text_parts.append(t)
-            except Exception:
-                pass
+            t = page.extract_text() or ""
+            if t:
+                text_parts.append(t)
     except Exception:
         pass
-    text = "\n".join(text_parts)
-    return clean_text(text)
+    return "\n".join(text_parts)
 
-def extract_text_docx(path: str) -> str:
+def extract_text_docx(path):
     try:
         doc = DocxDocument(path)
     except Exception:
@@ -83,16 +138,16 @@ def extract_text_docx(path: str) -> str:
     for tbl in getattr(doc, 'tables', []):
         for row in tbl.rows:
             parts.append(" \t ".join([cell.text for cell in row.cells]))
-    return clean_text("\n".join(parts))
+    return "\n".join(parts)
 
-def extract_text_txt(path: str) -> str:
+def extract_text_txt(path):
     try:
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-            return clean_text(f.read())
+            return f.read()
     except Exception:
         return ""
 
-def extract_text_generic(path: str) -> str:
+def extract_text_generic(path):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf":
         return extract_text_pdf(path)
@@ -103,161 +158,7 @@ def extract_text_generic(path: str) -> str:
     else:
         return ""
 
-def detect_course_name_number(tb: TextBlob) -> str:
-    top = tb.lines[:60]
-    joined_top = " \n".join(top)
-    m = re.search(r"\b([A-Z]{2,4}\s*\d{3,4}[A-Za-z]?)\b", joined_top)
-    if m:
-        idx = 0
-        for i, ln in enumerate(top):
-            if m.group(1) in ln:
-                idx = i
-                break
-        title = top[idx]
-        if len(title) < 20 and idx + 1 < len(top):
-            title += " - " + top[idx + 1]
-        return clean_text(title)
-    return ""
-
-def detect_faculty_name(tb: TextBlob) -> str:
-    for ln in tb.lines[:120]:
-        m = re.search(r"^(Instructor|Professor|Faculty|Lecturer)\s*[:\-]\s*(.+)$", ln, re.I)
-        if m:
-            name = re.sub(EMAIL_CPP_RE, "", m.group(2))
-            name = re.sub(r"\(.+?\)", "", name)
-            parts = [p for p in name.split(',') if '@' not in p]
-            if parts:
-                return clean_text(parts[0])
-            return clean_text(name)
-    return ""
-
-def detect_has_cpp_email(tb: TextBlob) -> bool:
-    return EMAIL_CPP_RE.search(tb.text) is not None
-
-def detect_class_schedule(tb: TextBlob) -> bool:
-    has_day = re.search(DAY_NAMES, tb.text, re.I) is not None
-    has_time = re.search(TIME_RE, tb.text) is not None
-    return bool(has_day and has_time)
-
-def detect_class_location(tb: TextBlob) -> bool:
-    patterns = [r"\bBldg\.?\s*\w+", r"\bBuilding\b\s*\w+", r"\bRoom\b\s*\w+", r"\b\w+-?\d{2,4}\b"]
-    return any(re.search(p, tb.text, re.I) for p in patterns)
-
-def detect_office_hours(tb: TextBlob) -> bool:
-    return tb.contains(r"(office\s*hours|student\s*hours)")
-
-def detect_office_location(tb: TextBlob) -> bool:
-    return tb.contains(r"\boffice\s*(location|:)\b") or tb.contains(r"\bOffice\b\s*:\s*\S+")
-
-def detect_learning_outcomes(tb: TextBlob) -> bool:
-    return tb.contains(r"(learning\s*outcomes?|course\s*objectives?)")
-
-def detect_final_grade_components(tb: TextBlob) -> bool:
-    has_grade_word = tb.contains(r"(grading|grade\s*breakdown|assessment|evaluation)")
-    has_percent = re.search(r"\d+\s*%", tb.text) is not None
-    return bool(has_grade_word and has_percent)
-
-def detect_weekly_schedule_section(tb: TextBlob):
-    for i, ln in enumerate(tb.lines):
-        if SCHEDULE_SECTION_HINTS.search(ln):
-            block = tb.lines[i:i+220]
-            return True, "\n".join(block)
-    return False, ""
-
-def detect_modality_phrase(tb: TextBlob) -> str:
-    lines = tb.lines
-    for i, ln in enumerate(lines):
-        if MODALITY_HINTS.search(ln):
-            snippet = ln
-            if len(snippet) < 40 and i + 1 < len(lines):
-                snippet = snippet + " | " + lines[i + 1]
-            return clean_text(snippet[:140])
-    explicit = re.search(r"\b(in[- ]?person|hybrid|hyflex|online\s*(?:sync|synchronous|async|asynchronous)?)\b.*", tb.text, re.I)
-    if explicit:
-        return clean_text(explicit.group(0)[:140])
-    return ""
-
-def detect_50pct_inperson(tb: TextBlob) -> bool:
-    has_sched, sched_text = detect_weekly_schedule_section(tb)
-    if not has_sched:
-        return False
-    lines = [ln.strip() for ln in sched_text.splitlines() if ln.strip()]
-    session_lines = []
-    for ln in lines:
-        if re.search(r"\b(Week|Session)\s*\d+\b", ln, re.I):
-            session_lines.append(ln)
-    if not session_lines:
-        for ln in lines:
-            if re.search(r"^(?:\d{1,2}\.|\d{1,2}\))\s+", ln):
-                session_lines.append(ln)
-    total = len(session_lines)
-    if total == 0:
-        return False
-    def has_any(patterns, s):
-        return any(re.search(p, s, re.I) for p in patterns)
-    inperson_count = 0
-    for ln in session_lines:
-        if has_any(INPERSON_TOKENS, ln):
-            inperson_count += 1
-    if inperson_count == 0:
-        return False
-    return (inperson_count / max(1, total)) >= 0.5
-
-def load_template_columns(template_path: str) -> list:
-    try:
-        if template_path.endswith('.ods'):
-            df = pd.read_excel(template_path, engine="odf")
-        else:
-            df = pd.read_excel(template_path)
-        cols = list(df.columns)
-        return cols
-    except Exception as e:
-        raise RuntimeError(f"Failed to read template '{template_path}': {e}")
-
-def analyze_one_file(path: str, template_cols: list, assistant_name="Ismail") -> dict:
-    text = extract_text_generic(path)
-    tb = TextBlob(text, path)
-    row = {c: "" for c in template_cols}
-    if "Student Assistants' Name (who works on the sheet)" in row:
-        row["Student Assistants' Name (who works on the sheet)"] = assistant_name
-    if "Course Name & Number" in row:
-        row["Course Name & Number"] = detect_course_name_number(tb)
-    if "Faculty Name" in row:
-        row["Faculty Name"] = detect_faculty_name(tb)
-    if "Faculty CPP email included?" in row:
-        row["Faculty CPP email included?"] = "Yes" if detect_has_cpp_email(tb) else "No"
-    if "Class schedule (day and time)?" in row:
-        row["Class schedule (day and time)?"] = "Yes" if detect_class_schedule(tb) else "No"
-    if "Class location (building number & classroom number)" in row:
-        row["Class location (building number & classroom number)"] = "Yes" if detect_class_location(tb) else "No"
-    if "Offic hours?" in row:
-        row["Offic hours?"] = "Yes" if detect_office_hours(tb) else "No"
-    if "Office location?" in row:
-        row["Office location?"] = "Yes" if detect_office_location(tb) else "No"
-    if "Course Learning Outcomes/Objectives included?" in row:
-        row["Course Learning Outcomes/Objectives included?"] = "Yes" if detect_learning_outcomes(tb) else "No"
-    if "Course modality specified?" in row:
-        modality_phrase = detect_modality_phrase(tb)
-        row["Course modality specified?"] = modality_phrase if modality_phrase else ""
-    if "Final Grade components explained" in row:
-        row["Final Grade components explained"] = "Yes" if detect_final_grade_components(tb) else "No"
-    has_sched, _ = detect_weekly_schedule_section(tb)
-    if "Weekly Schedule included?" in row:
-        row["Weekly Schedule included?"] = "Yes" if has_sched else "No"
-    if "Min. 50% in person class dates?" in row:
-        row["Min. 50% in person class dates?"] = "Yes" if detect_50pct_inperson(tb) else "No"
-    notes = []
-    if len(tb.text) < 200:
-        notes.append("Very little extractable text (possibly a scanned PDF).")
-    if (row.get("Offic hours?", "No") == "Yes") and (row.get("Office location?", "No") == "No"):
-        notes.append("Office hours found but no office location.")
-    if row.get("Course modality specified?", "").strip() == "":
-        notes.append("Modality not explicitly labeled.")
-    if "Notes" in row:
-        row["Notes"] = " | ".join(notes) if notes else ""
-    return row
-
-def gather_syllabus_paths(uploaded_names: list) -> list:
+def gather_syllabus_paths(uploaded_names):
     paths = []
     for name in uploaded_names:
         if name.lower().endswith('.zip'):
@@ -285,16 +186,36 @@ def save_uploaded_files(uploaded_files):
         saved.append(out_path)
     return saved
 
-# =====================
-# 2. Streamlit UI
-# =====================
+def load_template_columns(template_path):
+    if template_path.endswith('.ods'):
+        df = pd.read_excel(template_path, engine="odf")
+    else:
+        df = pd.read_excel(template_path)
+    return list(df.columns)
 
-st.set_page_config(page_title="Graduate Business School Syllabus Reviewer", layout="centered")
-st.title("Graduate Business Syllabus Reviewer")
-st.markdown("""
-Upload your **Excel/ODS template** and then upload one or more **syllabus files** (.pdf, .docx, .txt, or .zip).
-The app will extract the required data and provide a single Excel file with one row per syllabus.
-""")
+# ========== Main Extraction Routine ==========
+
+def analyze_one_file_v2(path, template_cols, assistant_name="Ismail"):
+    text = extract_text_generic(path)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    row = {c: "" for c in template_cols}
+    row["Student Assistants' Name (who works on the sheet)"] = assistant_name
+    row["Course Name & Number"] = extract_course_name_number(lines)
+    row["Faculty Name"] = extract_faculty_name(lines)
+    row["Faculty CPP email included?"] = extract_email(lines)
+    row["Class schedule (day and time)?"] = extract_schedule(lines)
+    row["Class location (building number & classroom number)"] = extract_class_location(lines)
+    row["Offic hours?"] = extract_office_hours(lines)
+    row["Office location?"] = extract_office_location(lines)
+    row["Course Learning Outcomes/Objectives included?"] = extract_learning_outcomes(lines)
+    row["Course modality specified?"] = extract_modality(lines)
+    row["Final Grade components explained"] = extract_grade_components(lines)
+    row["Weekly Schedule included?"] = extract_weekly_schedule(lines)
+    row["Min. 50% in person class dates?"] = extract_50pct_in_person(lines)
+    row["Notes"] = ""
+    return row
+
+# ========== Streamlit App UI ==========
 
 # Step 1: Upload Template
 template_file = st.file_uploader("Step 1: Upload your Excel/ODS template", type=['ods', 'xlsx'])
@@ -326,7 +247,7 @@ if uploaded_files:
         for path in syllabus_paths:
             st.write(f"Analyzing: `{os.path.basename(path)}`")
             try:
-                row = analyze_one_file(path, template_cols)
+                row = analyze_one_file_v2(path, template_cols)
                 rows.append(row)
             except Exception as e:
                 blank = {c: "" for c in template_cols}
@@ -348,5 +269,3 @@ if uploaded_files:
         st.dataframe(df_out)
 else:
     st.info("Upload one or more syllabus files to begin.")
-
-
