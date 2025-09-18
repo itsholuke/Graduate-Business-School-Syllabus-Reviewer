@@ -289,7 +289,7 @@ def save_uploaded_files(uploaded_files):
 # 2. Streamlit UI
 # =====================
 
-st.set_page_config(page_title="Graduate Business Syllabus Reviewer", layout="centered")
+st.set_page_config(page_title="Graduate Business School Syllabus Reviewer", layout="centered")
 st.title("Graduate Business Syllabus Reviewer")
 st.markdown("""
 Upload your **Excel/ODS template** and then upload one or more **syllabus files** (.pdf, .docx, .txt, or .zip).
@@ -348,4 +348,5 @@ if uploaded_files:
         st.dataframe(df_out)
 else:
     st.info("Upload one or more syllabus files to begin.")
+
 
