@@ -353,7 +353,7 @@ if uploaded_files:
                 txt = extract_text_generic(fp)
                 st.text(txt[:2000] + ("\n... (truncated)" if len(txt) > 2000 else ""))
 
-        st.markdown("---")
+                st.markdown("---")
         if st.button("Process Syllabi & Edit/Download Excel"):
             rows = []
             for path in syllabus_paths:
@@ -380,5 +380,10 @@ if uploaded_files:
             edited_df.to_excel(towrite, index=False)
             towrite.seek(0)
             st.download_button(
-                "Download Excel Output",
-               
+                label="Download Excel Output",
+                data=towrite,
+                file_name="syllabus_review_output.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+else:
+    st.info("Upload one or more syllabus files to begin.")
