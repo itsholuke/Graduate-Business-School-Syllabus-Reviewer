@@ -12,13 +12,13 @@ from docx import Document as DocxDocument
 # CONFIGURATION
 # -------------------------
 ASSISTANT_NAME = "Ismail"
-TOTAL_SESSIONS = 15  # Each course is 15 sessions/weeks
-MIN_INPERSON_SESSIONS = 8  # 50% or more
+TOTAL_SESSIONS = 15
+MIN_INPERSON_SESSIONS = 8
 
-# Map each column to possible labels/keywords (add more as needed)
+# Map each column to likely labels/patterns for "prompt-driven" scan
 COLUMN_PATTERNS = {
-    "Course Name & Number": [r"GBA\s*\d{4}[A-Za-z]?[:\-. ]+.+", r"Course Name", r"Course Title"],
-    "Faculty Name": [r"Instructor", r"Professor", r"Faculty", r"Dr\."],
+    "Course Name & Number": [r"GBA\s*\d{4}[A-Za-z]?[:\- ]+.+", r"GBA\s*\d{4}[A-Za-z]?", r"Course Name", r"Course Title"],
+    "Faculty Name": [r"Instructor", r"Professor", r"Faculty", r"Lecturer", r"Dr\."],
     "Faculty CPP email included?": [r"[a-zA-Z0-9._%+-]+@cpp\.edu"],
     "Class schedule (day and time)?": [r"Class schedule", r"Meeting Day", r"Meeting Time", r"Class Meetings", r"Schedule"],
     "Class location (building number & classroom number)": [r"Location", r"Room", r"Building", r"Bldg"],
@@ -26,7 +26,7 @@ COLUMN_PATTERNS = {
     "Office location?": [r"Office Location", r"Office:", r"Office Bldg"],
     "Course Learning Outcomes/Objectives included?": [r"Learning Objectives", r"Learning Outcomes", r"Objectives"],
     "Course modality specified?": [r"modality", r"instruction mode", r"hybrid", r"in-person", r"asynchronous", r"synchronous", r"online", r"format"],
-    "Final Grade components explained": [r"Grading", r"Grade", r"weight", r"points"],
+    "Final Grade components explained": [r"Grading", r"Grade", r"weight", r"points", r"Evaluation"],
     "Weekly Schedule included?": [r"Week\s*\d+", r"Session\s*\d+", r"Module\s*\d+", r"Schedule", r"Calendar"],
     "Min. 50% in person class dates?": [r"In[- ]?person", r"F2F", r"Face[- ]?to[- ]?Face", r"Session"],
 }
@@ -116,121 +116,176 @@ def load_template_columns(template_path):
 # -------------------------
 # EXTRACTION LOGIC
 # -------------------------
-def extract_value_for_column(column, lines):
-    patterns = COLUMN_PATTERNS.get(column, [])
-    if column == "Course Name & Number":
-        # Prefer direct course code + title extraction
-        for ln in lines:
-            m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)[\s:.\-]+(.+)", ln)
-            if m:
-                return f"{m.group(1).strip()}: {m.group(2).strip()}"
-        # Fallback: search for label
-        for pat in patterns:
-            for i, ln in enumerate(lines):
-                if re.search(pat, ln, re.I):
-                    if ":" in ln:
-                        return ln.split(":",1)[-1].strip()
-                    elif i+1 < len(lines):
-                        next_ln = lines[i+1].strip()
-                        if len(next_ln) > 5:
-                            return next_ln
-    elif column == "Faculty Name":
-        for ln in lines:
-            if any(re.search(pat, ln, re.I) for pat in patterns):
-                # Remove titles/credentials/emails/phones
-                name = ln.split(":",1)[-1].strip()
-                name = re.sub(r",?\s*(Ph\.?D\.?|MBA|CPA|CGMA|Esq\.?|Ed\.?D\.?|MSc|MSBA)", "", name)
-                name = re.sub(r"[a-zA-Z0-9._%+-]+@cpp\.edu", "", name)
-                name = re.sub(r"\(.+?\)", "", name)
-                name = name.split('(')[0].strip()
-                if name: return name
-                # Fallback: next line
-                idx = lines.index(ln)
-                if idx+1 < len(lines):
-                    next_ln = lines[idx+1].strip()
-                    if len(next_ln.split()) <= 4 and "@" not in next_ln:
-                        return next_ln
-    elif column == "Faculty CPP email included?":
-        for ln in lines:
-            if re.search(r"[a-zA-Z0-9._%+-]+@cpp\.edu", ln):
-                return "Yes"
-        return "No"
-    elif column == "Course modality specified?":
-        for ln in lines:
-            if any(re.search(pat, ln, re.I) for pat in patterns):
-                # Only report the exact phrase
-                match = re.search(r"(Hybrid Asynchronous|Hybrid Synchronous|Hybrid|In[- ]?person|Asynchronous|Synchronous|Online)", ln, re.I)
-                if match:
-                    return match.group(1).strip()
-                return ln.strip()
-        return ""
-    elif column == "Min. 50% in person class dates?":
-        # Use dedicated function (see below)
-        return ""
-    else:
-        for pat in patterns:
-            for i, ln in enumerate(lines):
-                if re.search(pat, ln, re.I):
-                    if ":" in ln:
-                        value = ln.split(":",1)[-1].strip()
-                        if value:
-                            return "Yes" if column.endswith("?") else value
-                    elif i+1 < len(lines):
-                        next_ln = lines[i+1].strip()
-                        if next_ln and not any(re.search(p, next_ln, re.I) for p in patterns):
-                            return "Yes" if column.endswith("?") else next_ln
-        # Default
-        return ""
+
+def extract_course_name_number(lines):
+    for i, ln in enumerate(lines):
+        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)[\s:.\-]+(.+)", ln)
+        if m:
+            code = m.group(1).replace(" ", "").strip()
+            title = m.group(2).strip()
+            return f"{code}: {title}"
+        m2 = re.match(r"(GBA\s*\d{4}[A-Za-z]?)\s*$", ln)
+        if m2 and i+1 < len(lines):
+            code = m2.group(1).replace(" ", "")
+            title = lines[i+1].strip()
+            if 5 < len(title) < 120:
+                return f"{code}: {title}"
     return ""
 
-def check_weekly_schedule(lines):
-    for pat in COLUMN_PATTERNS["Weekly Schedule included?"]:
-        for ln in lines:
-            if re.search(pat, ln, re.I):
+def extract_faculty_name(lines):
+    for ln in lines:
+        if any(x in ln for x in ["Instructor", "Professor", "Faculty", "Lecturer", "Dr."]):
+            name = re.sub(r"(Instructor|Professor|Faculty|Lecturer|Dr\.)[:\- ]*", "", ln, flags=re.I)
+            name = re.sub(r"\s*\(.*?\)", "", name)
+            name = re.sub(r"[A-Za-z0-9._%+-]+@cpp\.edu", "", name)
+            name = re.sub(r",?\s*(Ph\.?D\.?|MBA|CPA|CGMA|Esq\.?|Ed\.?D\.?|MSc|MSBA)", "", name)
+            name = name.replace("Email", "").replace("Contact", "")
+            name = re.sub(r"[^A-Za-z\-\' ]", "", name)
+            name = name.strip()
+            if 2 < len(name) < 60:
+                return name
+    return ""
+
+def extract_faculty_email(lines):
+    for ln in lines:
+        if re.search(r"[a-zA-Z0-9._%+-]+@cpp\.edu", ln):
+            return "Yes"
+    return "No"
+
+def extract_schedule(lines):
+    pats = COLUMN_PATTERNS["Class schedule (day and time)?"]
+    for ln in lines:
+        if any(re.search(pat, ln, re.I) for pat in pats):
+            return "Yes"
+    return "No"
+
+def extract_class_location(lines):
+    pats = COLUMN_PATTERNS["Class location (building number & classroom number)"]
+    for ln in lines:
+        if any(re.search(pat, ln, re.I) for pat in pats):
+            if re.search(r"\d", ln):  # Only if a number present (like room/building)
                 return "Yes"
     return "No"
 
-def check_50pct_inperson(lines):
-    inperson_count = 0
-    total_sessions = 0
-    schedule_lines = []
+def extract_office_hours(lines):
+    pats = COLUMN_PATTERNS["Offic hours?"]
     for ln in lines:
-        if re.search(r"Week\s*\d+|Session\s*\d+", ln, re.I):
-            schedule_lines.append(ln)
-    # Scan for explicit "In-person" or "F2F"
-    for ln in schedule_lines:
-        total_sessions += 1
+        if any(re.search(pat, ln, re.I) for pat in pats):
+            return "Yes"
+    return "No"
+
+def extract_office_location(lines):
+    pats = COLUMN_PATTERNS["Office location?"]
+    for ln in lines:
+        if any(re.search(pat, ln, re.I) for pat in pats) and "Hours" not in ln:
+            if re.search(r"\d", ln):  # Only if a number present (like room)
+                return "Yes"
+    return "No"
+
+def extract_learning_outcomes(lines):
+    pats = COLUMN_PATTERNS["Course Learning Outcomes/Objectives included?"]
+    for ln in lines:
+        if any(re.search(pat, ln, re.I) for pat in pats):
+            return "Yes"
+    return "No"
+
+def extract_modality(lines):
+    for ln in lines:
+        if re.search(r"hybrid.*asynchronous", ln, re.I):
+            return "Hybrid Asynchronous"
+        if re.search(r"hybrid.*synchronous", ln, re.I):
+            return "Hybrid Synchronous"
+        if re.search(r"in[- ]?person", ln, re.I):
+            return "In-person"
+        if re.search(r"asynchronous", ln, re.I):
+            return "Asynchronous"
+        if re.search(r"synchronous", ln, re.I):
+            return "Synchronous"
+        if re.search(r"online", ln, re.I):
+            return "Online"
+        if re.search(r"hybrid", ln, re.I):
+            return "Hybrid"
+    return ""
+
+def extract_final_grade_components(lines):
+    pats = COLUMN_PATTERNS["Final Grade components explained"]
+    for idx, ln in enumerate(lines):
+        if any(re.search(pat, ln, re.I) for pat in pats):
+            if "%" in ln or re.search(r"\d+\s*%", ln):
+                return "Yes"
+            # Look at the next couple of lines too
+            for j in range(1, 3):
+                if idx+j < len(lines):
+                    next_ln = lines[idx+j]
+                    if "%" in next_ln or re.search(r"\d+\s*%", next_ln):
+                        return "Yes"
+    return "No"
+
+def extract_weekly_schedule(lines):
+    pats = COLUMN_PATTERNS["Weekly Schedule included?"]
+    for ln in lines:
+        if any(re.search(pat, ln, re.I) for pat in pats):
+            return "Yes"
+    return "No"
+
+def check_50pct_inperson(lines):
+    # Out of 15 sessions
+    inperson_count = 0
+    total_count = 0
+    week_lines = []
+    for ln in lines:
+        if re.search(r"(Week|Session)\s*\d+", ln, re.I):
+            week_lines.append(ln)
+    if not week_lines:
+        week_lines = [ln for ln in lines if re.search(r"In[- ]?person|F2F|Face[- ]?to[- ]?Face", ln, re.I)]
+    for ln in week_lines:
+        total_count += 1
         if re.search(r"In[- ]?person|F2F|Face[- ]?to[- ]?Face", ln, re.I):
             inperson_count += 1
-    # If schedule is not explicit, look for possible mention of all sessions elsewhere
-    if total_sessions == 0:
-        for ln in lines:
-            if re.search(r"In[- ]?person|F2F|Face[- ]?to[- ]?Face", ln, re.I):
-                inperson_count += 1
-                total_sessions += 1
-    if total_sessions == 0:
-        return "No", "schedule/class dates not available"
+    # Enforce exactly 15 sessions in logic
+    if total_count < TOTAL_SESSIONS:
+        # Not enough detail: ambiguous, count as No, add note
+        return "No", "schedule/class dates not explicit"
     if inperson_count >= MIN_INPERSON_SESSIONS:
         return "Yes", ""
     else:
-        # Only put Notes if schedule is missing/ambiguous (as per your option B)
         if inperson_count == 0:
             return "No", "no in-person sessions"
         else:
             return "No", ""
     # If ambiguous, default to "No"
 
-def analyze_one_file_prompt(path, template_cols, assistant_name=ASSISTANT_NAME):
+def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
     text = extract_text_generic(path)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     row = {c: "" for c in template_cols}
-    row["Student Assistants' Name (who works on the sheet)"] = assistant_name
     notes = []
+    row["Student Assistants' Name (who works on the sheet)"] = assistant_name
     for col in template_cols:
         if col == "Student Assistants' Name (who works on the sheet)":
             continue
-        if col == "Weekly Schedule included?":
-            val = check_weekly_schedule(lines)
+        if col == "Course Name & Number":
+            row[col] = extract_course_name_number(lines)
+        elif col == "Faculty Name":
+            row[col] = extract_faculty_name(lines)
+        elif col == "Faculty CPP email included?":
+            row[col] = extract_faculty_email(lines)
+        elif col == "Class schedule (day and time)?":
+            row[col] = extract_schedule(lines)
+        elif col == "Class location (building number & classroom number)":
+            row[col] = extract_class_location(lines)
+        elif col == "Offic hours?":
+            row[col] = extract_office_hours(lines)
+        elif col == "Office location?":
+            row[col] = extract_office_location(lines)
+        elif col == "Course Learning Outcomes/Objectives included?":
+            row[col] = extract_learning_outcomes(lines)
+        elif col == "Course modality specified?":
+            row[col] = extract_modality(lines)
+        elif col == "Final Grade components explained":
+            row[col] = extract_final_grade_components(lines)
+        elif col == "Weekly Schedule included?":
+            val = extract_weekly_schedule(lines)
             row[col] = val
             if val == "No":
                 notes.append("Weekly schedule not explicit")
@@ -240,11 +295,7 @@ def analyze_one_file_prompt(path, template_cols, assistant_name=ASSISTANT_NAME):
             if note:
                 notes.append(note)
         else:
-            val = extract_value_for_column(col, lines)
-            if col.endswith("?"):
-                row[col] = "Yes" if val else "No"
-            else:
-                row[col] = val
+            row[col] = ""
     row["Notes"] = " | ".join(notes) if notes else ""
     return row
 
@@ -286,7 +337,7 @@ if uploaded_files:
         for path in syllabus_paths:
             st.write(f"Analyzing: `{os.path.basename(path)}`")
             try:
-                row = analyze_one_file_prompt(path, template_cols)
+                row = analyze_one_file_strict(path, template_cols)
                 rows.append(row)
             except Exception as e:
                 blank = {c: "" for c in template_cols}
