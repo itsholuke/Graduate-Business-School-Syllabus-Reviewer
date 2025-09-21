@@ -8,15 +8,12 @@ from tempfile import NamedTemporaryFile
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 
-# -------------------------
-# CONFIGURATION
-# -------------------------
 ASSISTANT_NAME = "Ismail"
 TOTAL_SESSIONS = 15
 MIN_INPERSON_SESSIONS = 8
 
 COLUMN_PATTERNS = {
-    "Course Name & Number": [r"GBA\s*\d{4}[A-Za-z]?[:\- ]+.+", r"GBA\s*\d{4}[A-Za-z]?", r"Course Name", r"Course Title"],
+    "Course Name & Number": [r"GBA\s*\d{4}[A-Za-z]?"],
     "Faculty Name": [r"Instructor", r"Professor", r"Faculty", r"Lecturer", r"Dr\."],
     "Faculty CPP email included?": [r"[a-zA-Z0-9._%+-]+@cpp\.edu"],
     "Class schedule (day and time)?": [r"Class schedule", r"Meeting Day", r"Meeting Time", r"Class Meetings", r"Schedule"],
@@ -30,9 +27,6 @@ COLUMN_PATTERNS = {
     "Min. 50% in person class dates?": [r"In[- ]?person", r"F2F", r"Face[- ]?to[- ]?Face", r"Session"],
 }
 
-# -------------------------
-# FILE READERS
-# -------------------------
 def extract_text_pdf(path):
     text_parts = []
     try:
@@ -112,35 +106,42 @@ def load_template_columns(template_path):
         df = pd.read_excel(template_path)
     return list(df.columns)
 
-# -------------------------
-# EXTRACTION LOGIC
-# -------------------------
+# --- FIXED COURSE NAME AND FACULTY NAME EXTRACTION ---
+
 def extract_course_name_number(lines):
     for i, ln in enumerate(lines):
-        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)[\s:.\-]+(.+)", ln)
+        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)\s*[:\-–]?\s*(.+)?", ln)
         if m:
-            code = m.group(1).replace(" ", "").strip()
-            title = m.group(2).strip()
-            return f"{code}: {title}"
-        m2 = re.match(r"(GBA\s*\d{4}[A-Za-z]?)\s*$", ln)
-        if m2 and i+1 < len(lines):
-            code = m2.group(1).replace(" ", "")
-            title = lines[i+1].strip()
-            if 5 < len(title) < 120:
-                return f"{code}: {title}"
+            code = m.group(1).replace(" ", "")
+            rest = m.group(2).strip() if m.group(2) else ""
+            bads = ["syllabus", "fall", "section", "spring", "schedule", "course number", "class", "p01", "p02"]
+            if not rest or any(bad in rest.lower() for bad in bads) or len(rest.split()) < 3:
+                for j in range(1, 4):
+                    if i+j < len(lines):
+                        next_line = lines[i+j].strip()
+                        if len(next_line.split()) > 3 and not any(bad in next_line.lower() for bad in bads):
+                            rest = next_line
+                            break
+            rest = re.sub(r"\(.*?\)", "", rest)
+            rest = re.sub(r"Fall \d{4}|Spring \d{4}|Section\s*[A-Za-z0-9]+", "", rest, flags=re.I).strip()
+            return f"{code}: {rest}".strip(": ").replace("  ", " ")
     return ""
 
 def extract_faculty_name(lines):
     for ln in lines:
-        if any(x in ln for x in ["Instructor", "Professor", "Faculty", "Lecturer", "Dr."]):
-            name = re.sub(r"(Instructor|Professor|Faculty|Lecturer|Dr\.)[:\- ]*", "", ln, flags=re.I)
-            name = re.sub(r"\s*\(.*?\)", "", name)
-            name = re.sub(r"[A-Za-z0-9._%+-]+@cpp\.edu", "", name)
-            name = re.sub(r",?\s*(Ph\.?D\.?|MBA|CPA|CGMA|Esq\.?|Ed\.?D\.?|MSc|MSBA)", "", name)
-            name = name.replace("Email", "").replace("Contact", "")
-            name = re.sub(r"[^A-Za-z\-\' ]", "", name)
-            name = name.strip()
-            if 2 < len(name) < 60:
+        m = re.search(r"(Instructor|Professor|Faculty|Lecturer)\s*[:\-]?\s*([A-Za-z\.\-\s']+)", ln, re.I)
+        if m:
+            name = m.group(2)
+            name = re.split(r",|Office|Email|Contact|Class", name)[0].strip()
+            name = re.sub(r"[^A-Za-z\s'\-]", "", name)
+            if len(name.split()) > 1:
+                return name
+    for ln in lines:
+        if ln.strip().startswith("Dr. "):
+            name = ln.strip().replace("Dr. ", "")
+            name = re.split(r",|Office|Email|Contact|Class", name)[0].strip()
+            name = re.sub(r"[^A-Za-z\s'\-]", "", name)
+            if len(name.split()) > 1:
                 return name
     return ""
 
@@ -247,7 +248,6 @@ def check_50pct_inperson(lines):
             return "No", "no in-person sessions"
         else:
             return "No", ""
-    # If ambiguous, default to "No"
 
 def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
     text = extract_text_generic(path)
@@ -293,16 +293,12 @@ def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
     row["Notes"] = " | ".join(notes) if notes else ""
     return row
 
-# -------------------------
-# STREAMLIT APP UI
-# -------------------------
+# --- Streamlit UI ---
+
 st.set_page_config(page_title="Graduate Business School Syllabus Reviewer", layout="centered")
 st.title("Graduate Business School Syllabus Reviewer")
 st.markdown("""
 Upload your **Excel/ODS template** and then one or more **syllabus files** (.pdf, .docx, .txt, .zip).
-
-**Step 1:** Preview and check all extracted text before analysis.  
-**Step 2:** Click "Process Syllabi & Download Excel" to review for compliance and get your results.
 """)
 
 template_file = st.file_uploader("Step 1: Upload your Excel/ODS template", type=['ods', 'xlsx'])
