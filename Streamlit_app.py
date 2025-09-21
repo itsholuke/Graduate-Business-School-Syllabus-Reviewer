@@ -106,42 +106,45 @@ def load_template_columns(template_path):
         df = pd.read_excel(template_path)
     return list(df.columns)
 
-# --- FIXED COURSE NAME AND FACULTY NAME EXTRACTION ---
+# === IMPROVED COURSE NAME & FACULTY NAME EXTRACTORS ===
 
 def extract_course_name_number(lines):
+    # Find code, then nearest "title-like" line with at least 4 words (not section, term, or generic label)
+    code = ""
+    title = ""
     for i, ln in enumerate(lines):
-        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)\s*[:\-–]?\s*(.+)?", ln)
-        if m:
-            code = m.group(1).replace(" ", "")
-            rest = m.group(2).strip() if m.group(2) else ""
-            bads = ["syllabus", "fall", "section", "spring", "schedule", "course number", "class", "p01", "p02"]
-            if not rest or any(bad in rest.lower() for bad in bads) or len(rest.split()) < 3:
-                for j in range(1, 4):
-                    if i+j < len(lines):
-                        next_line = lines[i+j].strip()
-                        if len(next_line.split()) > 3 and not any(bad in next_line.lower() for bad in bads):
-                            rest = next_line
-                            break
-            rest = re.sub(r"\(.*?\)", "", rest)
-            rest = re.sub(r"Fall \d{4}|Spring \d{4}|Section\s*[A-Za-z0-9]+", "", rest, flags=re.I).strip()
-            return f"{code}: {rest}".strip(": ").replace("  ", " ")
+        match = re.match(r"(GBA\s*\d{4}[A-Za-z]?)", ln)
+        if match:
+            code = match.group(1).replace(" ", "")
+            for j in range(i, min(i+4, len(lines))):
+                candidate = lines[j].strip()
+                bads = ["syllabus", "fall", "section", "spring", "schedule", "course number", "class", "p01", "p02", "about", "education", "service", "research", "videos", "teaching"]
+                if candidate.lower().startswith(code.lower()) or any(x in candidate.lower() for x in bads):
+                    continue
+                if len(candidate.split()) >= 4 and not candidate.isupper():
+                    title = candidate
+                    break
+            if code and title:
+                return f"{code}: {title}"
     return ""
 
 def extract_faculty_name(lines):
     for ln in lines:
         m = re.search(r"(Instructor|Professor|Faculty|Lecturer)\s*[:\-]?\s*([A-Za-z\.\-\s']+)", ln, re.I)
         if m:
-            name = m.group(2)
-            name = re.split(r",|Office|Email|Contact|Class", name)[0].strip()
+            name = m.group(2).strip()
+            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+", name, maxsplit=1)[0]
             name = re.sub(r"[^A-Za-z\s'\-]", "", name)
-            if len(name.split()) > 1:
+            bads = {"your", "peers", "class", "and", "the", "of", "information", "professor"}
+            namewords = set(w.lower() for w in name.split())
+            if len(name.split()) >= 2 and not (namewords & bads):
                 return name
     for ln in lines:
         if ln.strip().startswith("Dr. "):
             name = ln.strip().replace("Dr. ", "")
-            name = re.split(r",|Office|Email|Contact|Class", name)[0].strip()
+            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+", name, maxsplit=1)[0]
             name = re.sub(r"[^A-Za-z\s'\-]", "", name)
-            if len(name.split()) > 1:
+            if len(name.split()) >= 2:
                 return name
     return ""
 
@@ -292,8 +295,6 @@ def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
             row[col] = ""
     row["Notes"] = " | ".join(notes) if notes else ""
     return row
-
-# --- Streamlit UI ---
 
 st.set_page_config(page_title="Graduate Business School Syllabus Reviewer", layout="centered")
 st.title("Graduate Business School Syllabus Reviewer")
