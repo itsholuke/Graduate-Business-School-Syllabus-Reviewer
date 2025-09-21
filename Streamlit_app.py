@@ -106,25 +106,43 @@ def load_template_columns(template_path):
         df = pd.read_excel(template_path)
     return list(df.columns)
 
-# === IMPROVED COURSE NAME & FACULTY NAME EXTRACTORS ===
+# --- FINAL, ROBUST EXTRACTORS ---
 
 def extract_course_name_number(lines):
-    # Find code, then nearest "title-like" line with at least 4 words (not section, term, or generic label)
-    code = ""
-    title = ""
+    # 1. Scan for GBA code, then look up to 8 lines for best title
     for i, ln in enumerate(lines):
-        match = re.match(r"(GBA\s*\d{4}[A-Za-z]?)", ln)
-        if match:
-            code = match.group(1).replace(" ", "")
-            for j in range(i, min(i+4, len(lines))):
-                candidate = lines[j].strip()
-                bads = ["syllabus", "fall", "section", "spring", "schedule", "course number", "class", "p01", "p02", "about", "education", "service", "research", "videos", "teaching"]
-                if candidate.lower().startswith(code.lower()) or any(x in candidate.lower() for x in bads):
-                    continue
-                if len(candidate.split()) >= 4 and not candidate.isupper():
-                    title = candidate
-                    break
+        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)(:|\.|,|-)?\s*(.*)?", ln)
+        if m:
+            code = m.group(1).replace(" ", "")
+            rest = m.group(3).strip() if m.group(3) else ""
+            bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment"]
+            if rest and not any(b in rest.lower() for b in bads) and len(rest.split()) > 2:
+                title = rest
+            else:
+                title = ""
+                for j in range(1, 8):
+                    if i+j < len(lines):
+                        cand = lines[i+j].strip()
+                        if cand and not any(b in cand.lower() for b in bads) and len(cand.split()) > 2 and not cand.isupper():
+                            title = cand
+                            break
             if code and title:
+                return f"{code}: {title}"
+    for ln in lines:
+        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?):\s+(.+)", ln)
+        if m:
+            code = m.group(1).replace(" ", "")
+            title = m.group(2).strip()
+            bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment"]
+            if title and not any(b in title.lower() for b in bads) and len(title.split()) > 2:
+                return f"{code}: {title}"
+    for ln in lines:
+        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)\s+(.+)", ln)
+        if m:
+            code = m.group(1).replace(" ", "")
+            title = m.group(2).strip()
+            bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment"]
+            if title and not any(b in title.lower() for b in bads) and len(title.split()) > 2:
                 return f"{code}: {title}"
     return ""
 
@@ -133,19 +151,23 @@ def extract_faculty_name(lines):
         m = re.search(r"(Instructor|Professor|Faculty|Lecturer)\s*[:\-]?\s*([A-Za-z\.\-\s']+)", ln, re.I)
         if m:
             name = m.group(2).strip()
-            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+", name, maxsplit=1)[0]
+            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+|,|Office|Email|Contact|will\s+NOT|room|canvas", name, maxsplit=1)[0]
             name = re.sub(r"[^A-Za-z\s'\-]", "", name)
-            bads = {"your", "peers", "class", "and", "the", "of", "information", "professor"}
+            bads = {"your", "peers", "class", "and", "the", "of", "information", "professor", "office", "schedule", "canvas", "will"}
             namewords = set(w.lower() for w in name.split())
             if len(name.split()) >= 2 and not (namewords & bads):
                 return name
     for ln in lines:
         if ln.strip().startswith("Dr. "):
             name = ln.strip().replace("Dr. ", "")
-            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+", name, maxsplit=1)[0]
+            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+|,|Office|Email|Contact|will\s+NOT|room|canvas", name, maxsplit=1)[0]
             name = re.sub(r"[^A-Za-z\s'\-]", "", name)
             if len(name.split()) >= 2:
                 return name
+    for ln in lines[:40]:
+        words = [w for w in ln.split() if w.istitle()]
+        if len(words) >= 2 and len(" ".join(words)) < 32 and "Class" not in words and "Peer" not in words:
+            return " ".join(words)
     return ""
 
 def extract_faculty_email(lines):
@@ -342,22 +364,4 @@ if uploaded_files:
                     row = analyze_one_file_strict(path, template_cols)
                     rows.append(row)
                 except Exception as e:
-                    blank = {c: "" for c in template_cols}
-                    blank["Notes"] = f"Error: {e}"
-                    rows.append(blank)
-            df_out = pd.DataFrame(rows, columns=template_cols)
-            st.success(f"Done! Processed {len(df_out)} syllabi.")
-
-            towrite = BytesIO()
-            df_out.to_excel(towrite, index=False)
-            towrite.seek(0)
-            st.download_button(
-                "Download Excel Output",
-                data=towrite,
-                file_name="syllabus_review_output.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-            st.write("Preview:")
-            st.dataframe(df_out)
-else:
-    st.info("Upload one or more syllabus files to begin.")
+                    blank = {c: "" for c in
