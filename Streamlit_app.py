@@ -10,7 +10,7 @@ from docx import Document as DocxDocument
 
 ASSISTANT_NAME = ""
 TOTAL_SESSIONS = 15
-MIN_INPERSON_SESSIONS = 7
+MIN_INPERSON_SESSIONS = 8
 
 COLUMN_PATTERNS = {
     "Course Name & Number": [r"GBA\s*\d{4}[A-Za-z]?"],
@@ -107,7 +107,6 @@ def load_template_columns(template_path):
     return list(df.columns)
 
 def extract_course_name_number(lines):
-    # 1. Scan for GBA code, then look up to 8 lines for best title
     for i, ln in enumerate(lines):
         m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)(:|\.|,|-)?\s*(.*)?", ln)
         if m:
@@ -314,6 +313,7 @@ def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
         else:
             row[col] = ""
     row["Notes"] = " | ".join(notes) if notes else ""
+    row["_ExtractedText"] = text[:2000]
     return row
 
 st.set_page_config(page_title="Graduate Business School Syllabus Reviewer", layout="centered")
@@ -354,7 +354,7 @@ if uploaded_files:
                 st.text(txt[:2000] + ("\n... (truncated)" if len(txt) > 2000 else ""))
 
         st.markdown("---")
-        if st.button("Process Syllabi & Download Excel"):
+        if st.button("Process Syllabi & Edit/Download Excel"):
             rows = []
             for path in syllabus_paths:
                 st.write(f"Analyzing: `{os.path.basename(path)}`")
@@ -364,22 +364,21 @@ if uploaded_files:
                 except Exception as e:
                     blank = {c: "" for c in template_cols}
                     blank["Notes"] = f"Error: {e}"
+                    blank["_ExtractedText"] = ""
                     rows.append(blank)
-            df_out = pd.DataFrame(rows, columns=template_cols)
+            df_out = pd.DataFrame(rows, columns=template_cols + ["_ExtractedText"])
             st.success(f"Done! Processed {len(df_out)} syllabi.")
+            st.write("**You can manually edit or correct any cell below before download.**")
 
+            # Show editable table
+            edited_df = st.data_editor(
+                df_out.drop("_ExtractedText", axis=1),
+                use_container_width=True,
+                num_rows="dynamic",
+                key="editable_excel"
+            )
             towrite = BytesIO()
-            df_out.to_excel(towrite, index=False)
+            edited_df.to_excel(towrite, index=False)
             towrite.seek(0)
             st.download_button(
-                "Download Excel Output",
-                data=towrite,
-                file_name="syllabus_review_output.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-            st.write("Preview:")
-            st.dataframe(df_out)
-else:
-    st.info("Upload one or more syllabus files to begin.")
-
-
+                "Download Excel Output
