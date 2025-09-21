@@ -107,65 +107,62 @@ def load_template_columns(template_path):
     return list(df.columns)
 
 def extract_course_name_number(lines):
-    # 1. Scan for GBA code, then look up to 8 lines for best title
+    code_line_indices = []
+    code = ""
+    title = ""
+    # 1. Find all GBAxxxx lines
     for i, ln in enumerate(lines):
-        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)(:|\.|,|-)?\s*(.*)?", ln)
+        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)\b", ln)
         if m:
             code = m.group(1).replace(" ", "")
-            rest = m.group(3).strip() if m.group(3) else ""
-            bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment"]
-            if rest and not any(b in rest.lower() for b in bads) and len(rest.split()) > 2:
-                title = rest
-            else:
-                title = ""
-                for j in range(1, 8):
-                    if i+j < len(lines):
-                        cand = lines[i+j].strip()
-                        if cand and not any(b in cand.lower() for b in bads) and len(cand.split()) > 2 and not cand.isupper():
-                            title = cand
-                            break
-            if code and title:
-                return f"{code}: {title}"
+            code_line_indices.append(i)
+    bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment", "professor", "department"]
+    for i in code_line_indices:
+        candidates = []
+        for j in range(max(0, i-5), min(len(lines), i+10)):
+            ln = lines[j].strip()
+            if code.lower() in ln.lower() or not ln or any(b in ln.lower() for b in bads) or ln.isupper():
+                continue
+            if len(ln.split()) >= 4:
+                candidates.append(ln)
+        if candidates:
+            title = candidates[0]
+            return f"{code}: {title}"
+    # 3. Fallback: Any GBAxxxx: <title> pattern
     for ln in lines:
         m = re.match(r"(GBA\s*\d{4}[A-Za-z]?):\s+(.+)", ln)
         if m:
             code = m.group(1).replace(" ", "")
             title = m.group(2).strip()
-            bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment"]
-            if title and not any(b in title.lower() for b in bads) and len(title.split()) > 2:
+            if len(title.split()) >= 4 and not any(b in title.lower() for b in bads):
                 return f"{code}: {title}"
-    for ln in lines:
-        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)\s+(.+)", ln)
-        if m:
-            code = m.group(1).replace(" ", "")
-            title = m.group(2).strip()
-            bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment"]
-            if title and not any(b in title.lower() for b in bads) and len(title.split()) > 2:
-                return f"{code}: {title}"
-    return ""
+    return code  # fallback: only code if title not found
 
 def extract_faculty_name(lines):
-    for ln in lines:
-        m = re.search(r"(Instructor|Professor|Faculty|Lecturer)\s*[:\-]?\s*([A-Za-z\.\-\s']+)", ln, re.I)
-        if m:
-            name = m.group(2).strip()
-            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+|,|Office|Email|Contact|will\s+NOT|room|canvas", name, maxsplit=1)[0]
-            name = re.sub(r"[^A-Za-z\s'\-]", "", name)
-            bads = {"your", "peers", "class", "and", "the", "of", "information", "professor", "office", "schedule", "canvas", "will"}
-            namewords = set(w.lower() for w in name.split())
-            if len(name.split()) >= 2 and not (namewords & bads):
-                return name
+    label_indices = []
+    for i, ln in enumerate(lines):
+        if re.search(r"Instructor|Professor|Faculty|Lecturer", ln, re.I):
+            label_indices.append(i)
+    for i in label_indices:
+        for j in range(i-2, i+3):
+            if 0 <= j < len(lines):
+                ln = lines[j].strip()
+                if len(ln.split()) >= 2 and not re.search(r"(your|peers|office|schedule|class|email|contact|will not|professor|department|information|section|canvas|zoom|syllabus|room)", ln, re.I):
+                    ln_clean = re.sub(r"[^A-Za-z\-\.\' ]", "", ln)
+                    if len(ln_clean.split()) >= 2 and ln_clean.split()[0][0].isupper():
+                        return ln_clean
     for ln in lines:
         if ln.strip().startswith("Dr. "):
-            name = ln.strip().replace("Dr. ", "")
-            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+|,|Office|Email|Contact|will\s+NOT|room|canvas", name, maxsplit=1)[0]
-            name = re.sub(r"[^A-Za-z\s'\-]", "", name)
-            if len(name.split()) >= 2:
-                return name
-    for ln in lines[:40]:
+            ln_clean = ln.strip()[4:]
+            ln_clean = re.sub(r"[^A-Za-z\-\.\' ]", "", ln_clean)
+            if len(ln_clean.split()) >= 2:
+                return ln_clean
+    for ln in lines[:20]:
         words = [w for w in ln.split() if w.istitle()]
-        if len(words) >= 2 and len(" ".join(words)) < 32 and "Class" not in words and "Peer" not in words:
-            return " ".join(words)
+        if len(words) >= 2:
+            guess = " ".join(words)
+            if not re.search(r"(your|peers|office|schedule|class|email|contact|will not|professor|department|information|section|canvas|zoom|syllabus|room)", guess, re.I):
+                return guess
     return ""
 
 def extract_faculty_email(lines):
