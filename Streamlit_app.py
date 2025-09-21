@@ -10,7 +10,7 @@ from docx import Document as DocxDocument
 
 ASSISTANT_NAME = ""
 TOTAL_SESSIONS = 15
-MIN_INPERSON_SESSIONS = 7.5
+MIN_INPERSON_SESSIONS = 7
 
 COLUMN_PATTERNS = {
     "Course Name & Number": [r"GBA\s*\d{4}[A-Za-z]?"],
@@ -381,4 +381,5 @@ if uploaded_files:
             st.dataframe(df_out)
 else:
     st.info("Upload one or more syllabus files to begin.")
+
 
