@@ -370,7 +370,6 @@ if uploaded_files:
             st.success(f"Done! Processed {len(df_out)} syllabi.")
             st.write("**You can manually edit or correct any cell below before download.**")
 
-            # Show editable table
             edited_df = st.data_editor(
                 df_out.drop("_ExtractedText", axis=1),
                 use_container_width=True,
@@ -381,4 +380,5 @@ if uploaded_files:
             edited_df.to_excel(towrite, index=False)
             towrite.seek(0)
             st.download_button(
-                "Download Excel Output
+                "Download Excel Output",
+               
