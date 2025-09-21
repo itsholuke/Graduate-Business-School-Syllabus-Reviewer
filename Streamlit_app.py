@@ -106,8 +106,6 @@ def load_template_columns(template_path):
         df = pd.read_excel(template_path)
     return list(df.columns)
 
-# --- FINAL, ROBUST EXTRACTORS ---
-
 def extract_course_name_number(lines):
     # 1. Scan for GBA code, then look up to 8 lines for best title
     for i, ln in enumerate(lines):
@@ -364,4 +362,22 @@ if uploaded_files:
                     row = analyze_one_file_strict(path, template_cols)
                     rows.append(row)
                 except Exception as e:
-                    blank = {c: "" for c in
+                    blank = {c: "" for c in template_cols}
+                    blank["Notes"] = f"Error: {e}"
+                    rows.append(blank)
+            df_out = pd.DataFrame(rows, columns=template_cols)
+            st.success(f"Done! Processed {len(df_out)} syllabi.")
+
+            towrite = BytesIO()
+            df_out.to_excel(towrite, index=False)
+            towrite.seek(0)
+            st.download_button(
+                "Download Excel Output",
+                data=towrite,
+                file_name="syllabus_review_output.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            st.write("Preview:")
+            st.dataframe(df_out)
+else:
+    st.info("Upload one or more syllabus files to begin.")
