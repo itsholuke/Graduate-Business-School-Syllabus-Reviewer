@@ -107,17 +107,19 @@ def load_template_columns(template_path):
     return list(df.columns)
 
 def extract_course_name_number(lines):
+    # Look for code, then next line/title-like line, then fallback
     for i, ln in enumerate(lines):
         m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)(:|\.|,|-)?\s*(.*)?", ln)
         if m:
             code = m.group(1).replace(" ", "")
             rest = m.group(3).strip() if m.group(3) else ""
-            bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment"]
+            bads = ["syllabus", "fall", "spring", "section", "schedule", "video", "service", "about", "room", "canvas"]
             if rest and not any(b in rest.lower() for b in bads) and len(rest.split()) > 2:
                 title = rest
             else:
                 title = ""
-                for j in range(1, 8):
+                # Scan next 8 lines for title-like string
+                for j in range(1, 9):
                     if i+j < len(lines):
                         cand = lines[i+j].strip()
                         if cand and not any(b in cand.lower() for b in bads) and len(cand.split()) > 2 and not cand.isupper():
@@ -130,40 +132,25 @@ def extract_course_name_number(lines):
         if m:
             code = m.group(1).replace(" ", "")
             title = m.group(2).strip()
-            bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment"]
-            if title and not any(b in title.lower() for b in bads) and len(title.split()) > 2:
-                return f"{code}: {title}"
-    for ln in lines:
-        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)\s+(.+)", ln)
-        if m:
-            code = m.group(1).replace(" ", "")
-            title = m.group(2).strip()
-            bads = ["syllabus", "fall", "spring", "section", "schedule", "p01", "p02", "video", "about", "service", "research", "teaching", "office", "room", "canvas", "zoom", "assignment"]
-            if title and not any(b in title.lower() for b in bads) and len(title.split()) > 2:
+            if len(title.split()) > 2:
                 return f"{code}: {title}"
     return ""
 
 def extract_faculty_name(lines):
+    # 1. Label-based
     for ln in lines:
-        m = re.search(r"(Instructor|Professor|Faculty|Lecturer)\s*[:\-]?\s*([A-Za-z\.\-\s']+)", ln, re.I)
+        m = re.search(r"(Instructor|Professor|Faculty|Lecturer)\s*[:\-]?\s*([A-Z][a-z]+ [A-Z][a-z]+)", ln)
         if m:
-            name = m.group(2).strip()
-            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+|,|Office|Email|Contact|will\s+NOT|room|canvas", name, maxsplit=1)[0]
-            name = re.sub(r"[^A-Za-z\s'\-]", "", name)
-            bads = {"your", "peers", "class", "and", "the", "of", "information", "professor", "office", "schedule", "canvas", "will"}
-            namewords = set(w.lower() for w in name.split())
-            if len(name.split()) >= 2 and not (namewords & bads):
-                return name
+            return m.group(2)
+    # 2. Dr. Name
     for ln in lines:
-        if ln.strip().startswith("Dr. "):
-            name = ln.strip().replace("Dr. ", "")
-            name = re.split(r"\s+and\s+|\s+your\s+|\s+of\s+|\s+Class\s+|,|Office|Email|Contact|will\s+NOT|room|canvas", name, maxsplit=1)[0]
-            name = re.sub(r"[^A-Za-z\s'\-]", "", name)
-            if len(name.split()) >= 2:
-                return name
-    for ln in lines[:40]:
+        m = re.match(r"Dr\.?\s+([A-Z][a-z]+ [A-Z][a-z]+)", ln)
+        if m:
+            return m.group(1)
+    # 3. Any 2 title-case words in first 20 lines
+    for ln in lines[:20]:
         words = [w for w in ln.split() if w.istitle()]
-        if len(words) >= 2 and len(" ".join(words)) < 32 and "Class" not in words and "Peer" not in words:
+        if len(words) == 2:
             return " ".join(words)
     return ""
 
@@ -216,6 +203,8 @@ def extract_modality(lines):
             return "Hybrid Asynchronous"
         if re.search(r"hybrid.*synchronous", ln, re.I):
             return "Hybrid Synchronous"
+        if re.search(r"hybrid", ln, re.I):
+            return "Hybrid"
         if re.search(r"in[- ]?person", ln, re.I):
             return "In-person"
         if re.search(r"asynchronous", ln, re.I):
@@ -224,8 +213,6 @@ def extract_modality(lines):
             return "Synchronous"
         if re.search(r"online", ln, re.I):
             return "Online"
-        if re.search(r"hybrid", ln, re.I):
-            return "Hybrid"
     return ""
 
 def extract_final_grade_components(lines):
@@ -353,7 +340,7 @@ if uploaded_files:
                 txt = extract_text_generic(fp)
                 st.text(txt[:2000] + ("\n... (truncated)" if len(txt) > 2000 else ""))
 
-                st.markdown("---")
+        st.markdown("---")
         if st.button("Process Syllabi & Edit/Download Excel"):
             rows = []
             for path in syllabus_paths:
