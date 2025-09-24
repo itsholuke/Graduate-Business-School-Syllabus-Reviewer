@@ -107,7 +107,6 @@ def load_template_columns(template_path):
     return list(df.columns)
 
 def extract_course_name_number(lines):
-    # Look for code, then next line/title-like line, then fallback
     for i, ln in enumerate(lines):
         m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)(:|\.|,|-)?\s*(.*)?", ln)
         if m:
@@ -118,8 +117,7 @@ def extract_course_name_number(lines):
                 title = rest
             else:
                 title = ""
-                # Scan next 8 lines for title-like string
-                for j in range(1, 9):
+                for j in range(1, 8):
                     if i+j < len(lines):
                         cand = lines[i+j].strip()
                         if cand and not any(b in cand.lower() for b in bads) and len(cand.split()) > 2 and not cand.isupper():
@@ -338,7 +336,7 @@ if uploaded_files:
             st.write(f"---\n##### {os.path.basename(fp)}")
             with st.expander("Show extracted text"):
                 txt = extract_text_generic(fp)
-                st.text(txt[:2000] + ("\n... (truncated)" if len(txt) > 2000 else ""))
+                st.code(txt[:2000] + ("\n... (truncated)" if len(txt) > 2000 else ""), language="text")
 
         st.markdown("---")
         if st.button("Process Syllabi & Edit/Download Excel"):
