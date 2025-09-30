@@ -106,50 +106,85 @@ def load_template_columns(template_path):
         df = pd.read_excel(template_path)
     return list(df.columns)
 
-def extract_course_name_number(lines):
-    for i, ln in enumerate(lines):
-        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)(:|\.|,|-)?\s*(.*)?", ln)
-        if m:
-            code = m.group(1).replace(" ", "")
-            rest = m.group(3).strip() if m.group(3) else ""
-            bads = ["syllabus", "fall", "spring", "section", "schedule", "video", "service", "about", "room", "canvas"]
-            if rest and not any(b in rest.lower() for b in bads) and len(rest.split()) > 2:
-                title = rest
-            else:
-                title = ""
-                for j in range(1, 8):
-                    if i+j < len(lines):
-                        cand = lines[i+j].strip()
-                        if cand and not any(b in cand.lower() for b in bads) and len(cand.split()) > 2 and not cand.isupper():
-                            title = cand
-                            break
-            if code and title:
-                return f"{code}: {title}"
+def extract_faculty_name(lines, text):
     for ln in lines:
-        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?):\s+(.+)", ln)
+        m = re.search(r"(Instructor|Professor|Faculty|Lecturer)[^A-Za-z0-9]*([A-Z][a-z]+ [A-Z][a-z]+)", ln)
+        if m:
+            return m.group(2)
+    m = re.search(r"Dr\.?\s+([A-Z][a-z]+ [A-Z][a-z]+)", text)
+    if m:
+        return m.group(1)
+    for ln in lines[:20]:
+        words = ln.split()
+        caps = [w for w in words if w.istitle()]
+        if len(caps) == 2:
+            return " ".join(caps)
+    return ""
+
+def extract_course_name_number(lines, text):
+    for i, ln in enumerate(lines):
+        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)[\s:.,-]+(.+)", ln)
         if m:
             code = m.group(1).replace(" ", "")
             title = m.group(2).strip()
-            if len(title.split()) > 2:
+            if len(title.split()) > 2 and not title.isupper():
                 return f"{code}: {title}"
+        m2 = re.match(r"(GBA\s*\d{4}[A-Za-z]?)$", ln)
+        if m2 and i+1 < len(lines):
+            code = m2.group(1).replace(" ", "")
+            title = lines[i+1].strip()
+            if len(title.split()) > 2 and not title.isupper():
+                return f"{code}: {title}"
+    m = re.search(r"(GBA\s*\d{4}[A-Za-z]?)[:\-]\s+([A-Za-z].{10,100})", text)
+    if m:
+        code = m.group(1).replace(" ", "")
+        title = m.group(2).strip()
+        if len(title.split()) > 2:
+            return f"{code}: {title}"
     return ""
 
-def extract_faculty_name(lines):
-    # 1. Label-based
-    for ln in lines:
-        m = re.search(r"(Instructor|Professor|Faculty|Lecturer)\s*[:\-]?\s*([A-Z][a-z]+ [A-Z][a-z]+)", ln)
-        if m:
-            return m.group(2)
-    # 2. Dr. Name
-    for ln in lines:
-        m = re.match(r"Dr\.?\s+([A-Z][a-z]+ [A-Z][a-z]+)", ln)
-        if m:
-            return m.group(1)
-    # 3. Any 2 title-case words in first 20 lines
-    for ln in lines[:20]:
-        words = [w for w in ln.split() if w.istitle()]
-        if len(words) == 2:
-            return " ".join(words)
+def extract_50pct_inperson(lines, text):
+    session_lines = [ln for ln in lines if re.search(r"Week|Session", ln, re.I)]
+    inperson = [ln for ln in session_lines if re.search(r"In[- ]?person|F2F|Face[- ]?to[- ]?Face", ln, re.I)]
+    if session_lines and len(session_lines) >= 13:
+        if len(inperson) >= 8:
+            return "Yes", ""
+        else:
+            return "No", f"{len(inperson)} in-person sessions out of {len(session_lines)}"
+    m = re.search(r"(\d+)[\s\-]*(?:in[\s-]?person|F2F|Face[\s-]?to[\s-]?Face).{0,30}(\d+)[\s\-]*(?:online|Zoom|remote)", text, re.I)
+    if m:
+        inperson_count = int(m.group(1))
+        other_count = int(m.group(2))
+        if inperson_count >= 8:
+            return "Yes", ""
+        else:
+            return "No", f"{inperson_count} in person, {other_count} online"
+    m = re.search(r"(\d+)[\s\-]*(?:online|Zoom|remote).{0,30}(\d+)[\s\-]*(?:in[\s-]?person|F2F|Face[\s-]?to[\s-]?Face)", text, re.I)
+    if m:
+        other_count = int(m.group(1))
+        inperson_count = int(m.group(2))
+        if inperson_count >= 8:
+            return "Yes", ""
+        else:
+            return "No", f"{inperson_count} in person, {other_count} online"
+    return "No", "schedule/class dates not explicit"
+
+def extract_program(path, text):
+    basename = os.path.basename(path).lower()
+    programs = [
+        ("MBA", "mba"),
+        ("MSBA", "msba"),
+        ("Digital Supply Chain", "digital supply chain"),
+        ("MS Digital Supply Chain", "ms digital supply chain"),
+        ("GBA", "gba"),
+    ]
+    for program_label, key in programs:
+        if key in basename:
+            return program_label
+    text_lower = text[:500].lower()
+    for program_label, key in programs:
+        if key in text_lower:
+            return program_label
     return ""
 
 def extract_faculty_email(lines):
@@ -233,29 +268,6 @@ def extract_weekly_schedule(lines):
             return "Yes"
     return "No"
 
-def check_50pct_inperson(lines):
-    inperson_count = 0
-    total_count = 0
-    week_lines = []
-    for ln in lines:
-        if re.search(r"(Week|Session)\s*\d+", ln, re.I):
-            week_lines.append(ln)
-    if not week_lines:
-        week_lines = [ln for ln in lines if re.search(r"In[- ]?person|F2F|Face[- ]?to[- ]?Face", ln, re.I)]
-    for ln in week_lines:
-        total_count += 1
-        if re.search(r"In[- ]?person|F2F|Face[- ]?to[- ]?Face", ln, re.I):
-            inperson_count += 1
-    if total_count < TOTAL_SESSIONS:
-        return "No", "schedule/class dates not explicit"
-    if inperson_count >= MIN_INPERSON_SESSIONS:
-        return "Yes", ""
-    else:
-        if inperson_count == 0:
-            return "No", "no in-person sessions"
-        else:
-            return "No", ""
-
 def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
     text = extract_text_generic(path)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -266,9 +278,16 @@ def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
         if col == "Student Assistants' Name (who works on the sheet)":
             continue
         if col == "Course Name & Number":
-            row[col] = extract_course_name_number(lines)
+            row[col] = extract_course_name_number(lines, text)
         elif col == "Faculty Name":
-            row[col] = extract_faculty_name(lines)
+            row[col] = extract_faculty_name(lines, text)
+        elif col == "Program":
+            row[col] = extract_program(path, text)
+        elif col == "Min. 50% in person class dates?":
+            val, note = extract_50pct_inperson(lines, text)
+            row[col] = val
+            if note:
+                notes.append(note)
         elif col == "Faculty CPP email included?":
             row[col] = extract_faculty_email(lines)
         elif col == "Class schedule (day and time)?":
@@ -286,15 +305,7 @@ def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
         elif col == "Final Grade components explained":
             row[col] = extract_final_grade_components(lines)
         elif col == "Weekly Schedule included?":
-            val = extract_weekly_schedule(lines)
-            row[col] = val
-            if val == "No":
-                notes.append("Weekly schedule not explicit")
-        elif col == "Min. 50% in person class dates?":
-            val, note = check_50pct_inperson(lines)
-            row[col] = val
-            if note:
-                notes.append(note)
+            row[col] = extract_weekly_schedule(lines)
         else:
             row[col] = ""
     row["Notes"] = " | ".join(notes) if notes else ""
