@@ -8,18 +8,12 @@ from tempfile import NamedTemporaryFile
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 
-# GPT fallback imports
 import openai
 
-# --------- GPT API KEY SETUP ----------
-# For Streamlit Cloud: use secrets.toml
+# ---------- API KEY ----------
 openai.api_key = st.secrets["OPENAI_API_KEY"]
-# For local: Uncomment below to enter in browser (disable for cloud)
+# For local/test: uncomment to use in-browser entry (not for cloud!)
 # openai.api_key = st.text_input("Enter OpenAI API key", type="password")
-
-ASSISTANT_NAME = ""
-TOTAL_SESSIONS = 15
-MIN_INPERSON_SESSIONS = 8
 
 COLUMN_PATTERNS = {
     "Course Name & Number": [r"GBA\s*\d{4}[A-Za-z]?", r"MSIS\s*\d{4}", r"MSHRL\s*\d{4}"],
@@ -183,17 +177,13 @@ def fallback_gpt_course_name_number(text):
     except Exception:
         return "Unknown"
 
-def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
+def analyze_one_file_strict(path, template_cols):
     text = extract_text_generic(path)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     filename = os.path.basename(path)
     row = {c: "" for c in template_cols}
-    notes = []
-    row["Student Assistants' Name (who works on the sheet)"] = assistant_name
     for col in template_cols:
-        if col == "Student Assistants' Name (who works on the sheet)":
-            continue
-        elif col == "Course Name & Number":
+        if col == "Course Name & Number":
             val = extract_course_name_number(lines, text, filename)
             if not val or val.lower() == "unknown":
                 val = fallback_gpt_course_name_number(text)
@@ -281,7 +271,6 @@ def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
             row[col] = val
         else:
             row[col] = ""
-    row["Notes"] = ""
     return row
 
 st.set_page_config(page_title="Graduate Business School Syllabus Reviewer", layout="centered")
@@ -334,18 +323,24 @@ if uploaded_files:
                     blank["Notes"] = f"Error: {e}"
                     rows.append(blank)
             df_out = pd.DataFrame(rows, columns=template_cols)
+
             st.success(f"Done! Processed {len(df_out)} syllabi.")
 
+            st.markdown("#### **Edit any cell below before downloading:**")
+            edited_df = st.data_editor(
+                df_out,
+                use_container_width=True,
+                num_rows="dynamic",
+                key="editable_excel"
+            )
             towrite = BytesIO()
-            df_out.to_excel(towrite, index=False)
+            edited_df.to_excel(towrite, index=False)
             towrite.seek(0)
             st.download_button(
-                "Download Excel Output",
+                label="Download Excel Output",
                 data=towrite,
                 file_name="syllabus_review_output.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-            st.write("Preview:")
-            st.dataframe(df_out)
 else:
     st.info("Upload one or more syllabus files to begin.")
