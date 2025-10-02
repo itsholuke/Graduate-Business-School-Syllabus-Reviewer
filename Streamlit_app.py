@@ -8,12 +8,21 @@ from tempfile import NamedTemporaryFile
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 
+# GPT fallback imports
+import openai
+
+# --------- GPT API KEY SETUP ----------
+# For Streamlit Cloud: use secrets.toml
+openai.api_key = st.secrets["OPENAI_API_KEY"]
+# For local: Uncomment below to enter in browser (disable for cloud)
+# openai.api_key = st.text_input("Enter OpenAI API key", type="password")
+
 ASSISTANT_NAME = ""
 TOTAL_SESSIONS = 15
 MIN_INPERSON_SESSIONS = 8
 
 COLUMN_PATTERNS = {
-    "Course Name & Number": [r"GBA\s*\d{4}[A-Za-z]?"],
+    "Course Name & Number": [r"GBA\s*\d{4}[A-Za-z]?", r"MSIS\s*\d{4}", r"MSHRL\s*\d{4}"],
     "Faculty Name": [r"Instructor", r"Professor", r"Faculty", r"Lecturer", r"Dr\."],
     "Faculty CPP email included?": [r"[a-zA-Z0-9._%+-]+@cpp\.edu"],
     "Class schedule (day and time)?": [r"Class schedule", r"Meeting Day", r"Meeting Time", r"Class Meetings", r"Schedule"],
@@ -107,209 +116,172 @@ def load_template_columns(template_path):
     return list(df.columns)
 
 def extract_faculty_name(lines, text):
-    for ln in lines:
-        m = re.search(r"(Instructor|Professor|Faculty|Lecturer)[^A-Za-z0-9]*([A-Z][a-z]+ [A-Z][a-z]+)", ln)
+    for ln in lines[:40]:
+        m = re.search(r"(Instructor|Professor|Faculty|Lecturer)\s*[:\-]?\s*([A-Za-z\.\-\s']+)", ln, re.I)
         if m:
-            return m.group(2)
-    m = re.search(r"Dr\.?\s+([A-Z][a-z]+ [A-Z][a-z]+)", text)
-    if m:
-        return m.group(1)
+            name = m.group(2).strip()
+            name = re.split(r"[,;|]|Email|Contact|Office|and", name, 1)[0].strip()
+            name = re.sub(r"\b(Dr\.?|Prof\.?|Professor|Faculty|Lecturer)\b", "", name, flags=re.I).strip()
+            if len(name.split()) >= 2 and all(w[0].isupper() for w in name.split()[:2]):
+                return name
     for ln in lines[:20]:
         words = ln.split()
-        caps = [w for w in words if w.istitle()]
-        if len(caps) == 2:
-            return " ".join(caps)
-    return ""
+        for j in range(len(words)-1):
+            if words[j][0].isupper() and words[j+1][0].isupper():
+                possible_name = f"{words[j]} {words[j+1]}"
+                if possible_name.lower() not in ["course title", "class meeting"]:
+                    return possible_name
+    return None
 
-def extract_course_name_number(lines, text):
-    for i, ln in enumerate(lines):
-        m = re.match(r"(GBA\s*\d{4}[A-Za-z]?)[\s:.,-]+(.+)", ln)
+def fallback_gpt_faculty_name(text):
+    try:
+        resp = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": f"Extract the main instructor's full name from the following syllabus text. Only return the name. If not found, reply Unknown.\n\n{text[:3500]}"}],
+            max_tokens=50,
+            temperature=0,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        return "Unknown"
+
+def extract_course_name_number(lines, text, filename=""):
+    code_pat = r"\b([A-Z]{3,6}\s*\d{4}[A-Za-z]?)\b"
+    ignore_titles = ["syllabus", "fall", "spring", "section", "schedule", "course id", "p01", "p02", "video", "about", "research", "teaching", "office", "room", "canvas", "zoom", "assignment", "contact", "semester", "term"]
+    for i, ln in enumerate(lines[:50]):
+        m = re.search(code_pat, ln)
         if m:
             code = m.group(1).replace(" ", "")
-            title = m.group(2).strip()
-            if len(title.split()) > 2 and not title.isupper():
-                return f"{code}: {title}"
-        m2 = re.match(r"(GBA\s*\d{4}[A-Za-z]?)$", ln)
-        if m2 and i+1 < len(lines):
-            code = m2.group(1).replace(" ", "")
-            title = lines[i+1].strip()
-            if len(title.split()) > 2 and not title.isupper():
-                return f"{code}: {title}"
-    m = re.search(r"(GBA\s*\d{4}[A-Za-z]?)[:\-]\s+([A-Za-z].{10,100})", text)
+            after = ln[m.end():].strip(" -:•")
+            for sep in [":", "-", "–", "—"]:
+                if sep in after:
+                    title = after.split(sep, 1)[-1].strip()
+                    if len(title.split()) > 2 and not any(b in title.lower() for b in ignore_titles):
+                        return f"{code}: {title}"
+            for j in range(i+1, min(i+4, len(lines))):
+                next_ln = lines[j].strip()
+                if next_ln and not any(b in next_ln.lower() for b in ignore_titles) and len(next_ln.split()) > 2:
+                    return f"{code}: {next_ln}"
+    m = re.search(code_pat, filename)
     if m:
         code = m.group(1).replace(" ", "")
-        title = m.group(2).strip()
-        if len(title.split()) > 2:
-            return f"{code}: {title}"
-    return ""
+        fn_title = filename[m.end():].replace("_", " ").replace("-", " ").strip(" ._")
+        fn_title = re.sub(r"\.pdf|\.docx|\.txt", "", fn_title, flags=re.I)
+        if fn_title and len(fn_title.split()) > 2 and not any(b in fn_title.lower() for b in ignore_titles):
+            return f"{code}: {fn_title}"
+    return None
 
-def extract_50pct_inperson(lines, text):
-    session_lines = [ln for ln in lines if re.search(r"Week|Session", ln, re.I)]
-    inperson = [ln for ln in session_lines if re.search(r"In[- ]?person|F2F|Face[- ]?to[- ]?Face", ln, re.I)]
-    if session_lines and len(session_lines) >= 13:
-        if len(inperson) >= 8:
-            return "Yes", ""
-        else:
-            return "No", f"{len(inperson)} in-person sessions out of {len(session_lines)}"
-    m = re.search(r"(\d+)[\s\-]*(?:in[\s-]?person|F2F|Face[\s-]?to[\s-]?Face).{0,30}(\d+)[\s\-]*(?:online|Zoom|remote)", text, re.I)
-    if m:
-        inperson_count = int(m.group(1))
-        other_count = int(m.group(2))
-        if inperson_count >= 8:
-            return "Yes", ""
-        else:
-            return "No", f"{inperson_count} in person, {other_count} online"
-    m = re.search(r"(\d+)[\s\-]*(?:online|Zoom|remote).{0,30}(\d+)[\s\-]*(?:in[\s-]?person|F2F|Face[\s-]?to[\s-]?Face)", text, re.I)
-    if m:
-        other_count = int(m.group(1))
-        inperson_count = int(m.group(2))
-        if inperson_count >= 8:
-            return "Yes", ""
-        else:
-            return "No", f"{inperson_count} in person, {other_count} online"
-    return "No", "schedule/class dates not explicit"
-
-def extract_program(path, text):
-    basename = os.path.basename(path).lower()
-    programs = [
-        ("MBA", "mba"),
-        ("MSBA", "msba"),
-        ("Digital Supply Chain", "digital supply chain"),
-        ("MS Digital Supply Chain", "ms digital supply chain"),
-        ("GBA", "gba"),
-    ]
-    for program_label, key in programs:
-        if key in basename:
-            return program_label
-    text_lower = text[:500].lower()
-    for program_label, key in programs:
-        if key in text_lower:
-            return program_label
-    return ""
-
-def extract_faculty_email(lines):
-    for ln in lines:
-        if re.search(r"[a-zA-Z0-9._%+-]+@cpp\.edu", ln):
-            return "Yes"
-    return "No"
-
-def extract_schedule(lines):
-    pats = COLUMN_PATTERNS["Class schedule (day and time)?"]
-    for ln in lines:
-        if any(re.search(pat, ln, re.I) for pat in pats):
-            return "Yes"
-    return "No"
-
-def extract_class_location(lines):
-    pats = COLUMN_PATTERNS["Class location (building number & classroom number)"]
-    for ln in lines:
-        if any(re.search(pat, ln, re.I) for pat in pats):
-            if re.search(r"\d", ln):
-                return "Yes"
-    return "No"
-
-def extract_office_hours(lines):
-    pats = COLUMN_PATTERNS["Offic hours?"]
-    for ln in lines:
-        if any(re.search(pat, ln, re.I) for pat in pats):
-            return "Yes"
-    return "No"
-
-def extract_office_location(lines):
-    pats = COLUMN_PATTERNS["Office location?"]
-    for ln in lines:
-        if any(re.search(pat, ln, re.I) for pat in pats) and "Hours" not in ln:
-            if re.search(r"\d", ln):
-                return "Yes"
-    return "No"
-
-def extract_learning_outcomes(lines):
-    pats = COLUMN_PATTERNS["Course Learning Outcomes/Objectives included?"]
-    for ln in lines:
-        if any(re.search(pat, ln, re.I) for pat in pats):
-            return "Yes"
-    return "No"
-
-def extract_modality(lines):
-    for ln in lines:
-        if re.search(r"hybrid.*asynchronous", ln, re.I):
-            return "Hybrid Asynchronous"
-        if re.search(r"hybrid.*synchronous", ln, re.I):
-            return "Hybrid Synchronous"
-        if re.search(r"hybrid", ln, re.I):
-            return "Hybrid"
-        if re.search(r"in[- ]?person", ln, re.I):
-            return "In-person"
-        if re.search(r"asynchronous", ln, re.I):
-            return "Asynchronous"
-        if re.search(r"synchronous", ln, re.I):
-            return "Synchronous"
-        if re.search(r"online", ln, re.I):
-            return "Online"
-    return ""
-
-def extract_final_grade_components(lines):
-    pats = COLUMN_PATTERNS["Final Grade components explained"]
-    for idx, ln in enumerate(lines):
-        if any(re.search(pat, ln, re.I) for pat in pats):
-            if "%" in ln or re.search(r"\d+\s*%", ln):
-                return "Yes"
-            for j in range(1, 3):
-                if idx+j < len(lines):
-                    next_ln = lines[idx+j]
-                    if "%" in next_ln or re.search(r"\d+\s*%", next_ln):
-                        return "Yes"
-    return "No"
-
-def extract_weekly_schedule(lines):
-    pats = COLUMN_PATTERNS["Weekly Schedule included?"]
-    for ln in lines:
-        if any(re.search(pat, ln, re.I) for pat in pats):
-            return "Yes"
-    return "No"
+def fallback_gpt_course_name_number(text):
+    try:
+        resp = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": f"Extract the course code and full official title from the following syllabus, combine as 'CODE: Title'. Only return the result. If not found, reply Unknown.\n\n{text[:3500]}"}],
+            max_tokens=80,
+            temperature=0,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        return "Unknown"
 
 def analyze_one_file_strict(path, template_cols, assistant_name=ASSISTANT_NAME):
     text = extract_text_generic(path)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    filename = os.path.basename(path)
     row = {c: "" for c in template_cols}
     notes = []
     row["Student Assistants' Name (who works on the sheet)"] = assistant_name
     for col in template_cols:
         if col == "Student Assistants' Name (who works on the sheet)":
             continue
-        if col == "Course Name & Number":
-            row[col] = extract_course_name_number(lines, text)
+        elif col == "Course Name & Number":
+            val = extract_course_name_number(lines, text, filename)
+            if not val or val.lower() == "unknown":
+                val = fallback_gpt_course_name_number(text)
+            row[col] = val if val and val.lower() != "unknown" else ""
         elif col == "Faculty Name":
-            row[col] = extract_faculty_name(lines, text)
-        elif col == "Program":
-            row[col] = extract_program(path, text)
-        elif col == "Min. 50% in person class dates?":
-            val, note = extract_50pct_inperson(lines, text)
-            row[col] = val
-            if note:
-                notes.append(note)
+            val = extract_faculty_name(lines, text)
+            if not val or val.lower() == "unknown":
+                val = fallback_gpt_faculty_name(text)
+            row[col] = val if val and val.lower() != "unknown" else ""
         elif col == "Faculty CPP email included?":
-            row[col] = extract_faculty_email(lines)
+            row[col] = "Yes" if re.search(r"[a-zA-Z0-9._%+-]+@cpp\.edu", text) else "No"
         elif col == "Class schedule (day and time)?":
-            row[col] = extract_schedule(lines)
+            pats = COLUMN_PATTERNS["Class schedule (day and time)?"]
+            found = any(re.search(pat, text, re.I) for pat in pats)
+            row[col] = "Yes" if found else "No"
         elif col == "Class location (building number & classroom number)":
-            row[col] = extract_class_location(lines)
+            pats = COLUMN_PATTERNS["Class location (building number & classroom number)"]
+            found = any(re.search(pat, text, re.I) for pat in pats)
+            row[col] = "Yes" if found else "No"
         elif col == "Offic hours?":
-            row[col] = extract_office_hours(lines)
+            pats = COLUMN_PATTERNS["Offic hours?"]
+            found = any(re.search(pat, text, re.I) for pat in pats)
+            row[col] = "Yes" if found else "No"
         elif col == "Office location?":
-            row[col] = extract_office_location(lines)
+            pats = COLUMN_PATTERNS["Office location?"]
+            found = any(re.search(pat, text, re.I) for pat in pats)
+            row[col] = "Yes" if found else "No"
         elif col == "Course Learning Outcomes/Objectives included?":
-            row[col] = extract_learning_outcomes(lines)
+            pats = COLUMN_PATTERNS["Course Learning Outcomes/Objectives included?"]
+            found = any(re.search(pat, text, re.I) for pat in pats)
+            row[col] = "Yes" if found else "No"
         elif col == "Course modality specified?":
-            row[col] = extract_modality(lines)
+            val = ""
+            for kw in ["In-person", "Hybrid", "Online synchronous", "Online asynchronous", "Synchronous", "Asynchronous", "Remote", "Zoom"]:
+                for ln in lines[:80]:
+                    if kw.lower() in ln.lower():
+                        val = ln.strip()
+                        break
+                if val:
+                    break
+            if not val:
+                # fallback to LLM if nothing pattern matched
+                try:
+                    resp = openai.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{"role": "user", "content": f"Extract the exact course modality (e.g. In-person, Hybrid Synchronous, Online asynchronous) from the syllabus below. Only return the phrase.\n\n{text[:3500]}"}],
+                        max_tokens=60,
+                        temperature=0,
+                    )
+                    val = resp.choices[0].message.content.strip()
+                except Exception:
+                    val = ""
+            row[col] = val
         elif col == "Final Grade components explained":
-            row[col] = extract_final_grade_components(lines)
+            pats = COLUMN_PATTERNS["Final Grade components explained"]
+            found = any(re.search(pat, text, re.I) for pat in pats)
+            row[col] = "Yes" if found else "No"
         elif col == "Weekly Schedule included?":
-            row[col] = extract_weekly_schedule(lines)
+            pats = COLUMN_PATTERNS["Weekly Schedule included?"]
+            found = any(re.search(pat, text, re.I) for pat in pats)
+            row[col] = "Yes" if found else "No"
+        elif col == "Min. 50% in person class dates?":
+            session_lines = [ln for ln in lines if re.search(r"Week|Session", ln, re.I)]
+            inperson = [ln for ln in session_lines if re.search(r"In[- ]?person|F2F|Face[- ]?to[- ]?Face", ln, re.I)]
+            if session_lines and len(session_lines) >= 13:
+                row[col] = "Yes" if len(inperson) >= 8 else "No"
+            else:
+                row[col] = "No"
+        elif col == "Program":
+            basename = os.path.basename(path).lower()
+            programs = [
+                ("MBA", "mba"),
+                ("MSBA", "msba"),
+                ("Digital Supply Chain", "digital supply chain"),
+                ("MS Digital Supply Chain", "ms digital supply chain"),
+                ("GBA", "gba"),
+                ("MSDM", "msdm"),
+                ("MSHRL", "mshrl"),
+                ("MSIS", "msis"),
+            ]
+            val = ""
+            for program_label, key in programs:
+                if key in basename:
+                    val = program_label
+            row[col] = val
         else:
             row[col] = ""
-    row["Notes"] = " | ".join(notes) if notes else ""
-    row["_ExtractedText"] = text[:2000]
+    row["Notes"] = ""
     return row
 
 st.set_page_config(page_title="Graduate Business School Syllabus Reviewer", layout="centered")
@@ -360,26 +332,20 @@ if uploaded_files:
                 except Exception as e:
                     blank = {c: "" for c in template_cols}
                     blank["Notes"] = f"Error: {e}"
-                    blank["_ExtractedText"] = ""
                     rows.append(blank)
-            df_out = pd.DataFrame(rows, columns=template_cols + ["_ExtractedText"])
+            df_out = pd.DataFrame(rows, columns=template_cols)
             st.success(f"Done! Processed {len(df_out)} syllabi.")
-            st.write("**You can manually edit or correct any cell below before download.**")
 
-            edited_df = st.data_editor(
-                df_out.drop("_ExtractedText", axis=1),
-                use_container_width=True,
-                num_rows="dynamic",
-                key="editable_excel"
-            )
             towrite = BytesIO()
-            edited_df.to_excel(towrite, index=False)
+            df_out.to_excel(towrite, index=False)
             towrite.seek(0)
             st.download_button(
-                label="Download Excel Output",
+                "Download Excel Output",
                 data=towrite,
                 file_name="syllabus_review_output.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
+            st.write("Preview:")
+            st.dataframe(df_out)
 else:
     st.info("Upload one or more syllabus files to begin.")
