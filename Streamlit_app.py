@@ -12,7 +12,7 @@ import openai
 
 # ---------- API KEY ----------
 openai.api_key = st.secrets["OPENAI_API_KEY"]
-# For local/test: uncomment to use in-browser entry (not for cloud!)
+# For local testing, you could use:
 # openai.api_key = st.text_input("Enter OpenAI API key", type="password")
 
 COLUMN_PATTERNS = {
@@ -298,20 +298,21 @@ uploaded_files = st.file_uploader("Step 2: Upload syllabus files (.pdf, .docx, .
                                   type=['pdf', 'docx', 'txt', 'zip'], accept_multiple_files=True)
 
 if uploaded_files:
-    with st.spinner("Processing uploaded files..."):
-        saved_paths = save_uploaded_files(uploaded_files)
-        syllabus_paths = gather_syllabus_paths(saved_paths)
-        st.info(f"Found {len(syllabus_paths)} syllabus files to process.")
+    saved_paths = save_uploaded_files(uploaded_files)
+    syllabus_paths = gather_syllabus_paths(saved_paths)
+    st.info(f"Found {len(syllabus_paths)} syllabus files to process.")
 
-        st.markdown("### 🔍 **Preview: See Extracted Text for Each Syllabus**")
-        for fp in syllabus_paths:
-            st.write(f"---\n##### {os.path.basename(fp)}")
-            with st.expander("Show extracted text"):
-                txt = extract_text_generic(fp)
-                st.code(txt[:2000] + ("\n... (truncated)" if len(txt) > 2000 else ""), language="text")
+    st.markdown("### 🔍 **Preview: See Extracted Text for Each Syllabus**")
+    for fp in syllabus_paths:
+        st.write(f"---\n##### {os.path.basename(fp)}")
+        with st.expander("Show extracted text"):
+            txt = extract_text_generic(fp)
+            st.code(txt[:2000] + ("\n... (truncated)" if len(txt) > 2000 else ""), language="text")
 
-        st.markdown("---")
-        if st.button("Process Syllabi & Edit/Download Excel"):
+    st.markdown("---")
+    # Stateful processing & edit logic
+    if st.button("Process Syllabi & Edit/Download Excel") or "df_out" not in st.session_state:
+        with st.spinner("Processing uploaded files..."):
             rows = []
             for path in syllabus_paths:
                 st.write(f"Analyzing: `{os.path.basename(path)}`")
@@ -323,24 +324,26 @@ if uploaded_files:
                     blank["Notes"] = f"Error: {e}"
                     rows.append(blank)
             df_out = pd.DataFrame(rows, columns=template_cols)
+            st.session_state["df_out"] = df_out
+    else:
+        df_out = st.session_state["df_out"]
 
-            st.success(f"Done! Processed {len(df_out)} syllabi.")
-
-            st.markdown("#### **Edit any cell below before downloading:**")
-            edited_df = st.data_editor(
-                df_out,
-                use_container_width=True,
-                num_rows="dynamic",
-                key="editable_excel"
-            )
-            towrite = BytesIO()
-            edited_df.to_excel(towrite, index=False)
-            towrite.seek(0)
-            st.download_button(
-                label="Download Excel Output",
-                data=towrite,
-                file_name="syllabus_review_output.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+    # Editable table
+    st.markdown("#### **Edit any cell below before downloading:**")
+    edited_df = st.data_editor(
+        df_out,
+        use_container_width=True,
+        num_rows="dynamic",
+        key="editable_excel"
+    )
+    towrite = BytesIO()
+    edited_df.to_excel(towrite, index=False)
+    towrite.seek(0)
+    st.download_button(
+        label="Download Excel Output",
+        data=towrite,
+        file_name="syllabus_review_output.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 else:
     st.info("Upload one or more syllabus files to begin.")
