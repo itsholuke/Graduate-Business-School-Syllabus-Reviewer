@@ -1,7 +1,8 @@
 streamlit
-pypdf
-python-docx
 pandas
 openpyxl
 odfpy
 xlrd
+python-docx
+pypdf
+openai
