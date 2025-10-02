@@ -1,47 +1,75 @@
-# Graduate Business School Syllabus Reviewer
+Graduate Business School Syllabus Reviewer
 
-A Streamlit app to batch-review graduate business syllabi and output an Excel summary for compliance, accreditation, or curriculum review.
+A browser-based Streamlit app to batch-review graduate business school syllabi and output a detailed Excel summary for compliance or curriculum QA.
 
----
+How to Use
 
-## How to Use
+Upload your Excel/ODS template
+(with all your target review columns).
 
-1. **Upload your Excel/ODS template** (with your review columns/questions).
-2. **Upload one or more syllabus files** (`.pdf`, `.docx`, `.txt`, or a `.zip` of them).
-3. **Process syllabi and review results:**
-    - The app extracts all key information and displays an editable table.
-    - **Edit any cell directly in the browser** before download (no need to open Excel separately!).
-    - Use the “Extracted Text” preview for each file to help you verify or correct blanks.
-4. **Download the final, reviewed Excel file** for records, reporting, or further QA.
+Upload one or more syllabus files
+(.pdf, .docx, .txt, or a .zip of them).
 
----
+App auto-extracts all fields using advanced pattern logic (and OpenAI GPT fallback for “Course Name & Number” and “Faculty Name” only if pattern fails).
 
-## Features
+Review, edit (optional), and download the output Excel.
 
-- Upload and batch-analyze any number of syllabi (PDF, DOCX, TXT, or ZIP)
-- Uses your Excel/ODS template for flexible, standards-driven review
-- **Editable table**: Manually correct or fill any cell before download
-- **Preview full extracted text** for each syllabus (for QA or to guide manual corrections)
-- **Strict evidence-based auto-extraction**: Only fills “Yes” if information is explicit; blanks/unusual cases left for reviewer review
-- Download final Excel for reporting, audit, or archiving
+Key Features
 
----
+High-accuracy extraction for all compliance fields
 
-## Limitations
+Hybrid pattern + GPT logic for fields that are often missed by regex (e.g., instructor name, course code/title)
 
-- **Scanned PDFs** (image files) are not supported—only digital PDFs, DOCX, or TXT files will be processed.
-- For highly unusual or unstructured syllabi, **manual review in the browser is strongly recommended**.
-- For full AI (semantic) reading, see local Colab/GPT-powered versions.
+**No “guessing”—all outputs are either present in the document, filename, or returned as “Unknown” only if truly missing
 
----
+100% editable table in the browser before you download
 
-## Credits
+Requirements
 
-Built by Ismail, Graduate Student Assistant.  
-QA & documentation by [CBA].
+See requirements.txt for details.
+Works on Streamlit Cloud
+ or locally with:
 
----
+streamlit
 
-## Contact
+pandas
 
-Questions? Raise an issue or contact [itsholuke@cpp.edu].
+openpyxl
+
+odfpy
+
+xlrd
+
+python-docx
+
+pypdf
+
+openai
+
+API Key Setup
+
+For best results (LLM fallback), create an OpenAI API key
+ and put it in .streamlit/secrets.toml like:
+
+OPENAI_API_KEY = "sk-..."
+
+Deployment
+
+Push this repo to GitHub
+
+Deploy to Streamlit Cloud or run locally:
+
+streamlit run streamlit_app.py
+
+Limitations
+
+Only reads extractable (not scanned image-only) PDFs.
+
+LLM fallback can be slow and may incur API costs.
+
+Accuracy depends on syllabus formatting quality—edit in-browser if needed.
+
+Credits
+
+Built by Ismail Sholuke, Graduate Student Assistant.
+For support or feature requests, open an Issue.
